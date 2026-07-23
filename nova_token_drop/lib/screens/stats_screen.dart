@@ -1,17 +1,27 @@
 import 'package:flutter/material.dart';
+import '../core/achievements.dart';
 import '../core/storage.dart';
 import '../core/theme.dart';
 import '../game/level.dart';
 import '../widgets/neon.dart';
 import '../widgets/starfield.dart';
+import 'achievements_screen.dart';
 
-class StatsScreen extends StatelessWidget {
+class StatsScreen extends StatefulWidget {
   const StatsScreen({super.key});
 
+  @override
+  State<StatsScreen> createState() => _StatsScreenState();
+}
+
+class _StatsScreenState extends State<StatsScreen> {
   @override
   Widget build(BuildContext context) {
     final store = GameStorage.instance;
     final explored = store.galaxyExplored;
+    final readyToClaim = kAchievements
+        .where((d) => !store.achievementClaimed(d.id) && d.progressOf(store) >= d.target)
+        .length;
 
     return Scaffold(
       body: Starfield(
@@ -69,6 +79,23 @@ class StatsScreen extends StatelessWidget {
                               style: NovaText.label(12, color: NovaColors.textLo)),
                         ],
                       ),
+                    ),
+                    const SizedBox(height: 16),
+                    NeonButton(
+                      label: readyToClaim > 0
+                          ? 'Achievements · $readyToClaim ready'
+                          : 'Achievements',
+                      icon: Icons.emoji_events_rounded,
+                      gradient: readyToClaim > 0
+                          ? NovaColors.goldGradient
+                          : const [NovaColors.magenta, NovaColors.violet],
+                      height: 52,
+                      fontSize: 14,
+                      onTap: () async {
+                        await Navigator.of(context)
+                            .push(MaterialPageRoute(builder: (_) => const AchievementsScreen()));
+                        setState(() {});
+                      },
                     ),
                     const SizedBox(height: 16),
                     GridView.count(

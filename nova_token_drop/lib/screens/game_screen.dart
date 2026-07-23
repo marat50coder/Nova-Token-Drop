@@ -61,6 +61,10 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   void dispose() {
     _ticker?.dispose();
     c.dispose();
+    // Leaving the game screen (back button, Menu button, or moving on to a
+    // chapter-complete interstitial) must hand audio back to the menu theme
+    // instead of letting the game theme keep looping underneath.
+    Audio.instance.playMusic(Music.menu);
     super.dispose();
   }
 

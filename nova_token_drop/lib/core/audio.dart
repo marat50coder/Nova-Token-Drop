@@ -11,6 +11,7 @@ class Audio {
       List.generate(6, (i) => AudioPlayer(playerId: 'nova_sfx_$i'));
   int _sfxIndex = 0;
   String? _currentTrack;
+  bool _pausedByLifecycle = false;
 
   // Music holds normal focus (so it behaves like a "main" audio source),
   // SFX request NO focus at all so rapid-fire hits don't spam focus-change
@@ -48,6 +49,11 @@ class Audio {
   bool get _sfxOn => GameStorage.instance.sfxOn;
 
   Future<void> playMusic(String assetPath) async {
+    // Avoid restarting the same track from zero if it's already playing
+    // (e.g. redundant calls when several screens request the same theme).
+    if (_currentTrack == assetPath && _musicOn && _music.state == PlayerState.playing) {
+      return;
+    }
     _currentTrack = assetPath;
     if (!_musicOn) {
       await _music.stop();
@@ -59,13 +65,38 @@ class Audio {
     } catch (_) {}
   }
 
-  Future<void> stopMusic() async => _music.stop();
+  Future<void> stopMusic() async {
+    _currentTrack = null;
+    await _music.stop();
+  }
 
   Future<void> refreshMusic() async {
     if (_musicOn) {
       if (_currentTrack != null) await playMusic(_currentTrack!);
     } else {
       await _music.stop();
+    }
+  }
+
+  /// Called when the app is backgrounded (Home button, task switch, screen
+  /// lock, etc.) so music/SFX don't keep playing while the game isn't visible.
+  Future<void> pauseForBackground() async {
+    for (final p in _sfxPool) {
+      await p.stop();
+    }
+    if (_music.state == PlayerState.playing) {
+      _pausedByLifecycle = true;
+      await _music.pause();
+    }
+  }
+
+  /// Called when the app returns to the foreground.
+  Future<void> resumeFromBackground() async {
+    if (_pausedByLifecycle) {
+      _pausedByLifecycle = false;
+      if (_musicOn) {
+        await _music.resume();
+      }
     }
   }
 

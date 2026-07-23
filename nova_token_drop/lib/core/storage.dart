@@ -137,6 +137,16 @@ class GameStorage {
     addCrystals(reward);
   }
 
+  // ---- achievements ----
+  bool achievementClaimed(String id) => _p.getBool('ach_$id') ?? false;
+
+  void claimAchievement(String id, int reward) {
+    if (!achievementClaimed(id)) {
+      _p.setBool('ach_$id', true);
+      addCrystals(reward);
+    }
+  }
+
   Duration get timeUntilDailyReset {
     final now = DateTime.now();
     final next = DateTime(now.year, now.month, now.day).add(const Duration(days: 1));

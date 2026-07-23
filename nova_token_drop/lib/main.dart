@@ -19,8 +19,37 @@ Future<void> main() async {
   runApp(const NovaApp());
 }
 
-class NovaApp extends StatelessWidget {
+class NovaApp extends StatefulWidget {
   const NovaApp({super.key});
+
+  @override
+  State<NovaApp> createState() => _NovaAppState();
+}
+
+class _NovaAppState extends State<NovaApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Covers leaving the game entirely: Home button, task switch, screen
+    // lock, or the app being closed — music (and any live SFX) must stop
+    // instead of keeping playing in the background.
+    if (state == AppLifecycleState.resumed) {
+      Audio.instance.resumeFromBackground();
+    } else {
+      Audio.instance.pauseForBackground();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
