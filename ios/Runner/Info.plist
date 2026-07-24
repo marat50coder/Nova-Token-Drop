@@ -71,5 +71,12 @@
 	     locking and lets the game rotate freely. -->
 	<key>UIRequiresFullScreen</key>
 	<true/>
+	<!-- Export compliance: the app uses only standard iOS encryption (HTTPS
+	     via WKWebView) and no custom cryptography, which is exempt under
+	     the U.S. export regulations. Declaring this here means every new
+	     TestFlight/App Store build skips the "Missing Compliance" prompt
+	     in App Store Connect automatically. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 </dict>
 </plist>
