@@ -6,6 +6,13 @@ workflows:
       flutter: stable
       xcode: latest
       cocoapods: default
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: ios-white-part*
+          include: true
+          source: true
     # The Flutter project lives in a subdirectory of the repo, so every
     # Flutter/Xcode step needs to run there. Codemagic's default installer
     # otherwise looks for pubspec.yaml at /Users/builder/clone and fails
