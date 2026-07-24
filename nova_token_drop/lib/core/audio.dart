@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:audioplayers/audioplayers.dart';
 import 'storage.dart';
 
@@ -23,6 +25,15 @@ class Audio {
       audioFocus: AndroidAudioFocus.gain,
       stayAwake: false,
     ),
+    // On iOS use the ambient category so the game's music mixes politely
+    // with anything the user might already be playing (e.g. Music/Podcasts)
+    // and is silenced by the hardware mute switch, matching platform norms.
+    iOS: AudioContextIOS(
+      category: AVAudioSessionCategory.ambient,
+      options: const {
+        AVAudioSessionOptions.mixWithOthers,
+      },
+    ),
   );
 
   static final _sfxContext = AudioContext(
@@ -32,16 +43,37 @@ class Audio {
       audioFocus: AndroidAudioFocus.none,
       stayAwake: false,
     ),
+    iOS: AudioContextIOS(
+      category: AVAudioSessionCategory.ambient,
+      options: const {
+        AVAudioSessionOptions.mixWithOthers,
+      },
+    ),
   );
 
   Future<void> init() async {
-    await _music.setReleaseMode(ReleaseMode.loop);
-    await _music.setVolume(0.45);
-    await _music.setAudioContext(_musicContext);
+    // Each call is guarded so a single misbehaving platform call (e.g. a
+    // hang inside AVAudioSession activation on some iOS devices, or an
+    // unsupported PlayerMode on iOS) cannot block app startup.
+    await _guarded(() => _music.setReleaseMode(ReleaseMode.loop));
+    await _guarded(() => _music.setVolume(0.45));
+    await _guarded(() => _music.setAudioContext(_musicContext));
     for (final p in _sfxPool) {
-      await p.setReleaseMode(ReleaseMode.stop);
-      await p.setPlayerMode(PlayerMode.lowLatency);
-      await p.setAudioContext(_sfxContext);
+      await _guarded(() => p.setReleaseMode(ReleaseMode.stop));
+      // PlayerMode.lowLatency is Android-only (uses SoundPool). Setting it
+      // on iOS is at best a no-op and at worst can hang.
+      if (Platform.isAndroid) {
+        await _guarded(() => p.setPlayerMode(PlayerMode.lowLatency));
+      }
+      await _guarded(() => p.setAudioContext(_sfxContext));
+    }
+  }
+
+  Future<void> _guarded(Future<void> Function() op) async {
+    try {
+      await op().timeout(const Duration(seconds: 2));
+    } catch (_) {
+      // Swallow: audio setup must never prevent the game from starting.
     }
   }
 

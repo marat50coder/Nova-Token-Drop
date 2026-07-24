@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'core/audio.dart';
@@ -15,7 +16,10 @@ Future<void> main() async {
     DeviceOrientation.landscapeRight,
   ]);
   await GameStorage.instance.init();
-  await Audio.instance.init();
+  // Kick off audio setup but don't block startup on it — on some iOS devices
+  // AVAudioSession activation can be slow / hang, which would otherwise
+  // freeze the app on the LaunchScreen forever.
+  unawaited(Audio.instance.init());
   runApp(const NovaApp());
 }
 

@@ -33,7 +33,9 @@ class SpriteCache {
     var done = 0;
     for (final p in paths) {
       try {
-        await _load(p);
+        // Per-image timeout so a single asset that fails to decode (or a
+        // platform-side hiccup) can never freeze the loading screen.
+        await _load(p).timeout(const Duration(seconds: 5));
       } catch (_) {}
       done++;
       onProgress(done / paths.length);
