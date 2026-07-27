@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+2
+version: 1.0.1+3
 
 environment:
   sdk: ^3.10.8
@@ -37,6 +37,21 @@ dependencies:
   audioplayers: ^6.7.1
   webview_flutter: ^4.14.1
   shared_preferences: ^2.5.5
+
+  # ── Gray gate: attribution & push (do NOT downgrade this stack) ──────────
+  appsflyer_sdk: ^6.18.0
+  app_tracking_transparency: ^2.0.6+1
+  firebase_core: ^4.11.0
+  firebase_messaging: ^16.4.0
+  firebase_app_check: ^0.4.5
+
+  # ── Gray gate: rest of the stack ────────────────────────────────────────
+  connectivity_plus: ^7.1.1
+  http: ^1.6.0
+  device_info_plus: ^11.5.0
+  flutter_secure_storage: ^10.3.1
+  webview_flutter_wkwebview: ^3.22.0
+  url_launcher: ^6.3.2
 
 dev_dependencies:
   flutter_test:
@@ -68,6 +83,7 @@ flutter:
 
   assets:
     - assets/ui/
+    - assets/orbit/
     - assets/bg/
     - assets/sounds/
     - assets/music/

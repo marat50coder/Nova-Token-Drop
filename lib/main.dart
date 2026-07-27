@@ -1,30 +1,88 @@
 import 'dart:async';
+import 'package:firebase_app_check/firebase_app_check.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'core/audio.dart';
 import 'core/storage.dart';
 import 'core/theme.dart';
-import 'screens/loading_screen.dart';
+import 'orbit/config/nova_gate_config.dart';
+import 'orbit/gate_coordinator.dart';
+import 'orbit/infra/drift_attribution.dart';
+import 'orbit/infra/gate_exchange.dart';
+import 'orbit/infra/link_probe.dart';
+import 'orbit/infra/orbit_vault.dart';
+import 'orbit/infra/pulse_hub.dart';
+import 'orbit/infra/signal_agent.dart';
+import 'orbit/pages/boot_gate.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-  // Loading screen supports both orientations; the game locks to portrait later.
+  // Boot supports both orientations; the game locks to portrait later.
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
   ]);
-  await GameStorage.instance.init();
-  // Kick off audio setup but don't block startup on it — on some iOS devices
-  // AVAudioSession activation can be slow / hang, which would otherwise
-  // freeze the app on the LaunchScreen forever.
+
+  final vault = OrbitVault();
+  final agent = SignalAgent();
+  await Future.wait<void>(<Future<void>>[
+    GameStorage.instance.init(),
+    vault.initialize(),
+    agent.prepare(),
+  ]);
+  // Kick off audio setup but don't block startup on it.
   unawaited(Audio.instance.init());
-  runApp(const NovaApp());
+
+  var productionServicesReady = false;
+  if (NovaGateConfig.gateCredentialsReady) {
+    try {
+      await Firebase.initializeApp();
+      productionServicesReady = true;
+    } catch (error) {
+      assert(() {
+        debugPrint('[NOVA.BOOT] Firebase.initializeApp failed: $error');
+        return true;
+      }());
+    }
+    if (productionServicesReady) {
+      try {
+        await FirebaseAppCheck.instance.activate(
+          providerApple: kDebugMode
+              ? const AppleDebugProvider()
+              : const AppleAppAttestWithDeviceCheckFallbackProvider(),
+        );
+      } catch (_) {
+        // App Check must never block FCM / gray routing.
+      }
+    }
+  }
+
+  final probe = LinkProbe();
+  // Attribution + config POST must run even if Firebase init failed; only
+  // push/FCM needs productionServicesReady.
+  final pulse = PulseHub(vault, enabled: productionServicesReady);
+  final attribution = DriftAttribution(agent);
+  final coordinator = GateCoordinator(
+    vault: vault,
+    probe: probe,
+    attribution: attribution,
+    exchange: GateExchange(agent, vault),
+    pulse: pulse,
+    agent: agent,
+    runtimeEnabled: NovaGateConfig.gateCredentialsReady,
+  );
+
+  runApp(NovaApp(coordinator: coordinator));
 }
 
 class NovaApp extends StatefulWidget {
-  const NovaApp({super.key});
+  const NovaApp({super.key, this.coordinator});
+
+  final GateCoordinator? coordinator;
 
   @override
   State<NovaApp> createState() => _NovaAppState();
@@ -61,7 +119,7 @@ class _NovaAppState extends State<NovaApp> with WidgetsBindingObserver {
       title: 'Nova Token Drop',
       debugShowCheckedModeBanner: false,
       theme: NovaTheme.build(),
-      home: const LoadingScreen(),
+      home: BootGate(coordinator: widget.coordinator),
     );
   }
 }
