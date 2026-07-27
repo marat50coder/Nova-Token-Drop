@@ -79,6 +79,12 @@ flutter_launcher_icons:
 
 # The following section is specific to Flutter packages.
 flutter:
+  # iOS deps are managed via CocoaPods (Firebase + NSE). Flutter must not try
+  # to inject Swift Package Manager on top of that — it hits "Duplicate id
+  # found for PBXBuildFile" during archive on CI (Codemagic).
+  config:
+    enable-swift-package-manager: false
+
   uses-material-design: true
 
   assets:
