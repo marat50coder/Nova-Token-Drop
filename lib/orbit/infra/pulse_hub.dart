@@ -5,15 +5,30 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'orbit_vault.dart';
 
 @pragma('vm:entry-point')
-Future<void> novaBackgroundMessage(RemoteMessage _) async {}
+Future<void> ntdBackgroundMessage(RemoteMessage _) async {}
 
-/// Owns Firebase Messaging + APNs bootstrap and push-permission requests for
-/// the Nova gate. Cold-start taps are read separately via [ColdTapReader].
+/// Firebase Messaging + APNs bootstrap and push-permission requests for the
+/// Nova gate. Cold-start taps are read separately via [ColdTapReader].
 class PulseHub {
   PulseHub(this._vault, {required this.enabled});
 
+  static const int _initialMessageTimeoutSeconds = 4;
+  static const int _apnsPollDelayMs = 550;
+  static const int _apnsShortAttempts = 6;
+  static const int _apnsLongAttempts = 14;
+
+  static const List<String> _linkKeys = <String>[
+    'deep_link',
+    'target',
+    'url',
+    'deeplink',
+    'link',
+  ];
+  static const List<String> _nestedContainers = <String>['payload', 'data'];
+
   final OrbitVault _vault;
   final bool enabled;
+
   FirebaseMessaging? _messaging;
   Future<void>? _bootFuture;
   Future<bool>? _permissionFuture;
@@ -30,75 +45,88 @@ class PulseHub {
     if (!enabled) return;
     final messaging = FirebaseMessaging.instance;
     _messaging = messaging;
-    final initial = await messaging.getInitialMessage().timeout(
-      const Duration(seconds: 4),
-      onTimeout: () => null,
-    );
-    final initialUrl = initial == null ? null : _extract(initial.data);
-    if (initialUrl != null) await _vault.stashPushUrl(initialUrl);
 
-    FirebaseMessaging.onBackgroundMessage(novaBackgroundMessage);
+    await _consumeInitialMessage(messaging);
+
+    FirebaseMessaging.onBackgroundMessage(ntdBackgroundMessage);
     await messaging.setForegroundNotificationPresentationOptions(
       alert: true,
       badge: true,
       sound: true,
     );
-    messaging.onTokenRefresh.listen((value) {
-      _token = value;
-      onTokenChanged?.call(value);
-    });
-    FirebaseMessaging.onMessageOpenedApp.listen((message) {
-      final url = _extract(message.data);
-      if (url == null) return;
-      final callback = onDestination;
-      if (callback == null) {
-        _vault.stashPushUrl(url);
-      } else {
-        callback(url);
-      }
-    });
-    await _waitForApns();
+
+    messaging.onTokenRefresh.listen(_onTokenRefreshed);
+    FirebaseMessaging.onMessageOpenedApp.listen(_onNotificationOpened);
+
+    await _waitForApnsToken(_apnsShortAttempts);
     _token = await messaging.getToken();
   }
 
-  String? _extract(Map<String, dynamic> payload) {
-    for (final key in const <String>[
-      'deep_link',
-      'target',
-      'url',
-      'deeplink',
-      'link',
-    ]) {
-      final value = payload[key];
-      if (value is String && value.trim().isNotEmpty) return value.trim();
+  Future<void> _consumeInitialMessage(FirebaseMessaging messaging) async {
+    final initial = await messaging.getInitialMessage().timeout(
+      const Duration(seconds: _initialMessageTimeoutSeconds),
+      onTimeout: () => null,
+    );
+    if (initial == null) return;
+    final url = _extractUrl(initial.data);
+    if (url != null) await _vault.stashPushUrl(url);
+  }
+
+  void _onTokenRefreshed(String value) {
+    _token = value;
+    onTokenChanged?.call(value);
+  }
+
+  void _onNotificationOpened(RemoteMessage message) {
+    final url = _extractUrl(message.data);
+    if (url == null) return;
+    final callback = onDestination;
+    if (callback != null) {
+      callback(url);
+      return;
     }
-    for (final container in const <String>['payload', 'data']) {
+    _vault.stashPushUrl(url);
+  }
+
+  String? _extractUrl(Map<String, dynamic> payload) {
+    for (final key in _linkKeys) {
+      final value = payload[key];
+      if (value is String) {
+        final trimmed = value.trim();
+        if (trimmed.isNotEmpty) return trimmed;
+      }
+    }
+    for (final container in _nestedContainers) {
       final nested = payload[container];
       if (nested is Map) {
-        final found = _extract(Map<String, dynamic>.from(nested));
+        final found = _extractUrl(Map<String, dynamic>.from(nested));
         if (found != null) return found;
       }
     }
     return null;
   }
 
-  Future<void> _waitForApns({int attempts = 6}) async {
+  Future<void> _waitForApnsToken(int attempts) async {
     final messaging = _messaging;
     if (messaging == null) return;
-    for (var attempt = 0; attempt < attempts; attempt++) {
+    for (var i = 0; i < attempts; i++) {
       try {
-        if ((await messaging.getAPNSToken())?.isNotEmpty ?? false) return;
+        final apns = await messaging.getAPNSToken();
+        if ((apns?.isNotEmpty) ?? false) return;
       } catch (_) {}
-      await Future<void>.delayed(const Duration(milliseconds: 550));
+      await Future<void>.delayed(
+        const Duration(milliseconds: _apnsPollDelayMs),
+      );
     }
   }
 
   Future<bool> canOfferPermission() async {
-    if (!enabled || _vault.pushDeniedByOs) return false;
+    if (!enabled) return false;
+    if (_vault.pushDeniedByOs) return false;
     final messaging = _messaging;
     if (messaging == null) return false;
-    final status =
-        (await messaging.getNotificationSettings()).authorizationStatus;
+    final settings = await messaging.getNotificationSettings();
+    final status = settings.authorizationStatus;
     if (status == AuthorizationStatus.denied) {
       await _vault.markPushDeniedByOs();
       return false;
@@ -107,32 +135,38 @@ class PulseHub {
         status == AuthorizationStatus.provisional;
   }
 
-  Future<bool> askPermission() {
-    return _permissionFuture ??= _performPermissionRequest().whenComplete(
-      () => _permissionFuture = null,
-    );
-  }
+  Future<bool> askPermission() =>
+      _permissionFuture ??= _requestPermission().whenComplete(
+        () => _permissionFuture = null,
+      );
 
-  Future<bool> _performPermissionRequest() async {
-    if (!enabled || _messaging == null) return false;
-    final result = await _messaging!.requestPermission(
+  Future<bool> _requestPermission() async {
+    final messaging = _messaging;
+    if (!enabled || messaging == null) return false;
+    final settings = await messaging.requestPermission(
       alert: true,
       badge: true,
       sound: true,
       provisional: false,
     );
-    final accepted =
-        result.authorizationStatus == AuthorizationStatus.authorized ||
-        result.authorizationStatus == AuthorizationStatus.provisional;
-    await _vault.setPushAllowed(accepted);
-    if (!accepted && result.authorizationStatus == AuthorizationStatus.denied) {
+    final granted =
+        settings.authorizationStatus == AuthorizationStatus.authorized ||
+            settings.authorizationStatus == AuthorizationStatus.provisional;
+
+    await _vault.setPushAllowed(granted);
+    if (!granted &&
+        settings.authorizationStatus == AuthorizationStatus.denied) {
       await _vault.markPushDeniedByOs();
     }
-    if (accepted) {
-      await _waitForApns(attempts: 14);
-      _token = await _messaging!.getToken();
-      if (_token?.isNotEmpty ?? false) onTokenChanged?.call(_token!);
+
+    if (granted) {
+      await _waitForApnsToken(_apnsLongAttempts);
+      _token = await messaging.getToken();
+      final refreshed = _token;
+      if (refreshed != null && refreshed.isNotEmpty) {
+        onTokenChanged?.call(refreshed);
+      }
     }
-    return accepted;
+    return granted;
   }
 }

@@ -44,7 +44,7 @@ Future<void> main() async {
       productionServicesReady = true;
     } catch (error) {
       assert(() {
-        debugPrint('[NOVA.BOOT] Firebase.initializeApp failed: $error');
+        debugPrint('[NTD.BOOT] Firebase.initializeApp failed: $error');
         return true;
       }());
     }

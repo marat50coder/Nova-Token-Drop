@@ -6,9 +6,9 @@ import UserNotifications
 /// tapping a push) and stashes the deep-link URL into UserDefaults so the Dart
 /// side (`ColdTapReader`) can consume it and route straight to the WebView.
 class SceneDelegate: FlutterSceneDelegate {
-  // Must match `ColdTapReader._dartKey` on the Dart side, with the SharedPrefs
-  // `flutter.` prefix added here.
-  static let launchRouteKey = "flutter.nova_cold_link"
+  // Must match `ColdTapReader.coldTapKey` on the Dart side, with the
+  // SharedPreferences `flutter.` prefix added here.
+  static let coldRouteKey = "flutter.ntd_route_seed"
 
   override func scene(
     _ scene: UIScene,
@@ -25,11 +25,11 @@ class SceneDelegate: FlutterSceneDelegate {
     else { return }
 
     let defaults = UserDefaults.standard
-    defaults.set(destination, forKey: Self.launchRouteKey)
+    defaults.set(destination, forKey: Self.coldRouteKey)
     defaults.synchronize()
 
     #if DEBUG
-    NSLog("[NOVA.ROUTE] captured notification destination")
+    NSLog("[NTD.ROUTE] captured notification destination")
     #endif
   }
 

@@ -3,30 +3,38 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/gate_models.dart';
 
+/// SharedPreferences + SecureStorage owner for the Nova gate. Every key is
+/// namespaced under a project-unique prefix (`ntd.drop.*`) so nothing here
+/// collides with — or clusters against — sibling apps in the portfolio.
 class OrbitVault {
-  static const String _routeKey = 'nova.gate.route';
-  static const String _expiryKey = 'nova.gate.expiry';
-  static const String _inviteKey = 'nova.gate.invite.after';
-  static const String _permissionKey = 'nova.gate.push.allowed';
-  static const String _osDeniedKey = 'nova.gate.push.os_denied';
-  static const String _savedUrlKey = 'nova.gate.secure.destination';
-  static const String _pendingUrlKey = 'nova.gate.secure.pending';
+  static const String _prefix = 'ntd.drop';
+
+  // Prefs (route + timestamps + booleans).
+  static const String _kRoute = '$_prefix.route';
+  static const String _kExpiry = '$_prefix.cache.expiry';
+  static const String _kInviteAfter = '$_prefix.invite.after';
+  static const String _kPushAllowed = '$_prefix.push.allowed';
+  static const String _kPushOsDenied = '$_prefix.push.osdenied';
+
+  // SecureStorage (URLs — sensitive).
+  static const String _kSecureCachedUrl = '$_prefix.secure.link';
+  static const String _kSecurePendingUrl = '$_prefix.secure.pending';
 
   final FlutterSecureStorage _secure = const FlutterSecureStorage();
-  late SharedPreferences _preferences;
+  late final SharedPreferences _prefs;
 
   Future<void> initialize() async {
-    _preferences = await SharedPreferences.getInstance();
+    _prefs = await SharedPreferences.getInstance();
   }
 
-  GateRoute get route => GateRoute.parse(_preferences.getString(_routeKey));
+  GateRoute get route => GateRoute.parse(_prefs.getString(_kRoute));
 
   Future<void> saveRoute(GateRoute route) =>
-      _preferences.setString(_routeKey, route.storageValue);
+      _prefs.setString(_kRoute, route.storageValue);
 
   Future<String?> savedUrl() async {
     try {
-      return await _secure.read(key: _savedUrlKey);
+      return await _secure.read(key: _kSecureCachedUrl);
     } catch (_) {
       return null;
     }
@@ -34,52 +42,57 @@ class OrbitVault {
 
   Future<void> cacheUrl(String url, int? expiresAt) async {
     try {
-      await _secure.write(key: _savedUrlKey, value: url);
-      if (expiresAt != null) {
-        await _preferences.setInt(_expiryKey, expiresAt);
-      }
-    } catch (_) {}
+      await _secure.write(key: _kSecureCachedUrl, value: url);
+    } catch (_) {
+      return;
+    }
+    if (expiresAt != null) {
+      await _prefs.setInt(_kExpiry, expiresAt);
+    }
   }
 
   bool get cachedUrlExpired {
-    final expiry = _preferences.getInt(_expiryKey);
-    return expiry == null ||
-        DateTime.now().millisecondsSinceEpoch ~/ 1000 >= expiry;
+    final expiry = _prefs.getInt(_kExpiry);
+    if (expiry == null) return true;
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    return now >= expiry;
   }
 
   Future<void> stashPushUrl(String url) async {
-    if (url.trim().isEmpty) return;
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return;
     try {
-      await _secure.write(key: _pendingUrlKey, value: url.trim());
+      await _secure.write(key: _kSecurePendingUrl, value: trimmed);
     } catch (_) {}
   }
 
   Future<String?> consumePushUrl() async {
     try {
-      final value = await _secure.read(key: _pendingUrlKey);
-      if (value != null) await _secure.delete(key: _pendingUrlKey);
+      final value = await _secure.read(key: _kSecurePendingUrl);
+      if (value != null) await _secure.delete(key: _kSecurePendingUrl);
       return value;
     } catch (_) {
       return null;
     }
   }
 
-  bool get pushAllowed => _preferences.getBool(_permissionKey) ?? false;
-  bool get pushDeniedByOs => _preferences.getBool(_osDeniedKey) ?? false;
+  bool get pushAllowed => _prefs.getBool(_kPushAllowed) ?? false;
+  bool get pushDeniedByOs => _prefs.getBool(_kPushOsDenied) ?? false;
 
   Future<void> setPushAllowed(bool value) =>
-      _preferences.setBool(_permissionKey, value);
+      _prefs.setBool(_kPushAllowed, value);
 
   Future<void> markPushDeniedByOs() =>
-      _preferences.setBool(_osDeniedKey, true);
+      _prefs.setBool(_kPushOsDenied, true);
 
   bool get shouldShowPushInvite {
     if (pushAllowed || pushDeniedByOs) return false;
-    final after = _preferences.getInt(_inviteKey);
-    return after == null ||
-        DateTime.now().millisecondsSinceEpoch ~/ 1000 >= after;
+    final resumeAt = _prefs.getInt(_kInviteAfter);
+    if (resumeAt == null) return true;
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    return now >= resumeAt;
   }
 
   Future<void> snoozePushInvite(int epochSeconds) =>
-      _preferences.setInt(_inviteKey, epochSeconds);
+      _prefs.setInt(_kInviteAfter, epochSeconds);
 }

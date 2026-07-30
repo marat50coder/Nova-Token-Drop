@@ -48,7 +48,10 @@ class _LoadingScreenState extends State<LoadingScreen> with TickerProviderStateM
     _smoother?.cancel();
     for (var i = 0; i < 18; i++) {
       if (!mounted) return;
-      setState(() => _display += (1.0 - _display) * 0.35 + 0.01);
+      setState(() {
+        final next = _display + (1.0 - _display) * 0.35 + 0.01;
+        _display = next > 1.0 ? 1.0 : next;
+      });
       await Future.delayed(const Duration(milliseconds: 22));
     }
     if (!mounted) return;
@@ -110,7 +113,7 @@ class _LoadingScreenState extends State<LoadingScreen> with TickerProviderStateM
                     const SizedBox(height: 16),
                     _progressBar(barWidth.toDouble()),
                     const SizedBox(height: 8),
-                    Text('${(_display * 100).round()}%',
+                    Text('${(_display.clamp(0.0, 1.0) * 100).round()}%',
                         style: NovaText.title(14, color: NovaColors.cyan)),
                   ],
                 ),

@@ -10,30 +10,37 @@ import 'package:flutter/widgets.dart';
 import '../config/nova_gate_config.dart';
 import 'signal_agent.dart';
 
-void novaTrace(String Function() message) {
+/// Assert-wrapped logger — the closure AND its string literal are stripped
+/// from release builds so `[NTD.*]` tags never ship in the binary.
+void ntdLog(String Function() build) {
   assert(() {
-    debugPrint(message());
+    debugPrint(build());
     return true;
   }());
 }
 
+/// Owns AppsFlyer + ATT + GCD fetch for the Nova gate. Emits a single unified
+/// payload via [compose] that mixes install + reopen + deep-link data on top
+/// of the app identity fields.
 class DriftAttribution {
   DriftAttribution(this._agent);
 
   final SignalAgent _agent;
+
   AppsflyerSdk? _sdk;
   Map<String, dynamic>? _install;
   Map<String, dynamic>? _reopen;
   Map<String, dynamic>? _deepLink;
-  Future<void>? _startFuture;
-  final Completer<void> _installReady = Completer<void>();
-  final Completer<void> _deepLinkReady = Completer<void>();
+  Future<void>? _bootstrap;
 
-  Future<void> start() => _startFuture ??= _start();
+  final Completer<void> _installGate = Completer<void>();
+  final Completer<void> _deepLinkGate = Completer<void>();
 
-  Future<void> _start() async {
+  Future<void> start() => _bootstrap ??= _bootstrap0();
+
+  Future<void> _bootstrap0() async {
     if (!NovaGateConfig.gateCredentialsReady) {
-      _completeEmpty();
+      _fulfillEmpty();
       return;
     }
     try {
@@ -47,22 +54,28 @@ class DriftAttribution {
         ),
       );
       _sdk = sdk;
-      sdk.onInstallConversionData(_acceptInstall);
-      sdk.onAppOpenAttribution((raw) => _reopen = _flat(raw));
-      sdk.onDeepLinking((result) {
-        final event = result.deepLink?.clickEvent;
-        if (event != null) _deepLink = Map<String, dynamic>.from(event);
-        if (!_deepLinkReady.isCompleted) _deepLinkReady.complete();
-      });
+
+      sdk.onInstallConversionData(_onInstall);
+      sdk.onAppOpenAttribution((payload) => _reopen = _flatten(payload));
+      sdk.onDeepLinking(_onDeepLink);
+
       await sdk.initSdk(
         registerConversionDataCallback: true,
         registerOnAppOpenAttributionCallback: true,
         registerOnDeepLinkingCallback: true,
       );
     } catch (error) {
-      novaTrace(() => '[NOVA.DRIFT] initialization failed: $error');
-      _completeEmpty();
+      ntdLog(() => '[NTD.DRIFT] init error: $error');
+      _fulfillEmpty();
     }
+  }
+
+  void _onDeepLink(DeepLinkResult result) {
+    final event = result.deepLink?.clickEvent;
+    if (event != null) {
+      _deepLink = Map<String, dynamic>.from(event);
+    }
+    if (!_deepLinkGate.isCompleted) _deepLinkGate.complete();
   }
 
   Future<void> _requestTrackingIfNeeded() async {
@@ -74,53 +87,56 @@ class DriftAttribution {
     await AppTrackingTransparency.requestTrackingAuthorization();
   }
 
-  Future<void> _acceptInstall(dynamic raw) async {
+  Future<void> _onInstall(dynamic raw) async {
     try {
-      final received = _flat(raw);
-      final status = received['status']?.toString().toLowerCase();
-      // AppsFlyer delivers a {status:failure,...} map when it can't reach its
-      // servers (e.g. an ad-blocking VPN blackholes *.appsflyersdk.com). Never
-      // merge that error map into the payload.
+      final flat = _flatten(raw);
+      final status = flat['status']?.toString().toLowerCase();
+      // AppsFlyer delivers `{status:"failure", ...}` when it can't reach its
+      // servers (e.g. an ad-blocking VPN blackholes *.appsflyersdk.com). We
+      // must not merge that error map into the payload.
       final failed = status == 'failure' ||
-          (received['af_status'] == null && received.containsKey('status'));
-      novaTrace(
-        () => '[NOVA.DRIFT] conversion status=$status '
-            'af_status=${received['af_status']} keys=${received.keys.toList()}',
+          (flat['af_status'] == null && flat.containsKey('status'));
+
+      ntdLog(
+        () => '[NTD.DRIFT] conversion status=$status '
+            'af_status=${flat['af_status']} keys=${flat.keys.toList()}',
       );
+
       if (failed) {
         _install = <String, dynamic>{};
-      } else if (received['af_status'] == 'Organic') {
+      } else if (flat['af_status'] == 'Organic') {
         await Future<void>.delayed(
           const Duration(seconds: NovaGateConfig.organicRecheckSeconds),
         );
-        _install = await _fetchGcd() ?? received;
+        _install = (await _fetchGcd()) ?? flat;
       } else {
-        _install = received;
+        _install = flat;
       }
     } catch (error) {
-      novaTrace(() => '[NOVA.DRIFT] conversion parse error: $error');
+      ntdLog(() => '[NTD.DRIFT] conversion parse error: $error');
       _install = <String, dynamic>{};
     } finally {
-      if (!_installReady.isCompleted) _installReady.complete();
+      if (!_installGate.isCompleted) _installGate.complete();
     }
   }
 
-  Map<String, dynamic> _flat(dynamic raw) {
+  Map<String, dynamic> _flatten(dynamic raw) {
     if (raw is! Map) return <String, dynamic>{};
-    final map = Map<String, dynamic>.from(raw);
-    final payload = map['payload'];
-    return payload is Map ? Map<String, dynamic>.from(payload) : map;
+    final outer = Map<String, dynamic>.from(raw);
+    final inner = outer['payload'];
+    return inner is Map ? Map<String, dynamic>.from(inner) : outer;
   }
 
   Future<Map<String, dynamic>?> _fetchGcd() async {
     final uid = await appsFlyerId();
     if (uid == null || uid.isEmpty) return null;
     try {
-      // iOS GCD uses the numeric App Store id, not the bundle id.
+      // iOS GCD wants the numeric App Store id, not the bundle id.
       final base = NovaGateConfig.gcdBase;
-      final sep = base.contains('?') ? '&' : '?';
+      final separator = base.contains('?') ? '&' : '?';
       final uri = Uri.parse(
-        '$base${sep}app_id=${NovaGateConfig.iosStoreId}&device_id=$uid',
+        '$base${separator}app_id=${NovaGateConfig.iosStoreId}'
+        '&device_id=$uid',
       );
       final response = await _agent
           .get(
@@ -132,7 +148,10 @@ class DriftAttribution {
           .timeout(const Duration(seconds: 12));
       if (response.statusCode != 200) return null;
       final decoded = jsonDecode(response.body);
-      return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+      if (decoded is Map) {
+        return Map<String, dynamic>.from(decoded);
+      }
+      return null;
     } catch (_) {
       return null;
     }
@@ -143,11 +162,9 @@ class DriftAttribution {
   }) async {
     await start();
     await Future.wait<void>(<Future<void>>[
-      _installReady.future.timeout(installTimeout, onTimeout: () {}),
-      _deepLinkReady.future.timeout(
-        const Duration(seconds: 5),
-        onTimeout: () {},
-      ),
+      _installGate.future.timeout(installTimeout, onTimeout: () {}),
+      _deepLinkGate.future
+          .timeout(const Duration(seconds: 5), onTimeout: () {}),
     ]);
   }
 
@@ -163,44 +180,56 @@ class DriftAttribution {
     required String locale,
     String? pushToken,
   }) async {
-    final body = <String, dynamic>{};
-    if (_install != null) body.addAll(_install!);
-    if (_reopen != null) {
-      _reopen!.forEach((key, value) => body.putIfAbsent(key, () => value));
-    }
-    if (_deepLink != null) {
-      _deepLink!.forEach((key, value) => body.putIfAbsent(key, () => value));
+    final payload = <String, dynamic>{};
+
+    // Install first, then reopen, then deep-link — deep-link never overrides
+    // an install-time value; earlier sources win on collisions.
+    void mergeIfAbsent(Map<String, dynamic>? source) {
+      if (source == null) return;
+      for (final entry in source.entries) {
+        payload.putIfAbsent(entry.key, () => entry.value);
+      }
     }
 
-    body['af_id'] = await appsFlyerId() ?? body['af_id'] ?? '';
-    body['bundle_id'] = NovaGateConfig.bundleId;
-    body['os'] = 'iOS';
-    body['store_id'] = NovaGateConfig.storeToken;
-    body['locale'] = locale;
-    if (pushToken != null &&
-        pushToken.isNotEmpty &&
-        NovaGateConfig.firebaseProjectNumber.isNotEmpty) {
-      body['push_token'] = pushToken;
-      body['firebase_project_id'] = NovaGateConfig.firebaseProjectNumber;
+    if (_install != null) payload.addAll(_install!);
+    mergeIfAbsent(_reopen);
+    mergeIfAbsent(_deepLink);
+
+    payload['af_id'] = await appsFlyerId() ?? payload['af_id'] ?? '';
+    payload['bundle_id'] = NovaGateConfig.bundleId;
+    payload['os'] = 'iOS';
+    payload['store_id'] = NovaGateConfig.storeToken;
+    payload['locale'] = locale;
+
+    final firebaseId = NovaGateConfig.firebaseProjectNumber;
+    if (pushToken != null && pushToken.isNotEmpty && firebaseId.isNotEmpty) {
+      payload['push_token'] = pushToken;
+      payload['firebase_project_id'] = firebaseId;
     }
 
     if (Platform.isIOS) {
-      try {
-        if (await AppTrackingTransparency.trackingAuthorizationStatus ==
-            TrackingStatus.authorized) {
-          final idfa = await AppTrackingTransparency.getAdvertisingIdentifier();
-          if (idfa.isNotEmpty && !idfa.startsWith('00000000-')) {
-            body['sub_id_10'] = idfa;
-          }
-        }
-      } catch (_) {}
+      final idfa = await _readIdfaIfAuthorised();
+      if (idfa != null) payload['sub_id_10'] = idfa;
     }
-    novaTrace(() => '[NOVA.DRIFT] payload ${jsonEncode(body)}');
-    return body;
+
+    ntdLog(() => '[NTD.DRIFT] payload ${jsonEncode(payload)}');
+    return payload;
   }
 
-  void _completeEmpty() {
-    if (!_installReady.isCompleted) _installReady.complete();
-    if (!_deepLinkReady.isCompleted) _deepLinkReady.complete();
+  Future<String?> _readIdfaIfAuthorised() async {
+    try {
+      final auth = await AppTrackingTransparency.trackingAuthorizationStatus;
+      if (auth != TrackingStatus.authorized) return null;
+      final idfa = await AppTrackingTransparency.getAdvertisingIdentifier();
+      if (idfa.isEmpty || idfa.startsWith('00000000-')) return null;
+      return idfa;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _fulfillEmpty() {
+    if (!_installGate.isCompleted) _installGate.complete();
+    if (!_deepLinkGate.isCompleted) _deepLinkGate.complete();
   }
 }

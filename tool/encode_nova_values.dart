@@ -2,52 +2,58 @@
 
 import 'dart:typed_data';
 
-/// Keep byte-for-byte identical to `_driftSeed` in
-/// lib/orbit/core/nebula_cipher.dart.
-const List<int> _driftSeed = <int>[
-  78, 118, 55, 68, 114, 48, 112, 46, 79, 114, 98, 105, 116,
+/// Keep byte-for-byte identical to `_pulseSalt` in
+/// `lib/orbit/core/nebula_cipher.dart` — otherwise the arrays this tool prints
+/// will not round-trip through `decodeNebula` at runtime.
+const List<int> _pulseSalt = <int>[
+  0xB7, 0x24, 0x91, 0xEA, 0x1F, 0x5C, 0x38, 0x77, 0xC2, 0x60,
+  0x0D, 0xA9, 0x4E, 0x83, 0xF6,
 ];
 
-Uint8List _driftStream(int length) {
-  final state = List<int>.generate(256, (index) => index);
-  var cursor = 0;
-  for (var index = 0; index < state.length; index++) {
-    cursor =
-        (cursor + state[index] + _driftSeed[index % _driftSeed.length] + index) &
-        0xff;
-    final swap = state[index];
-    state[index] = state[cursor];
-    state[cursor] = swap;
+const int _fnvPrime = 0x01000193;
+const int _fnvBasis = 0x811C9DC5;
+const int _positionMask = 0xC3;
+
+int _fold(int hash, int byte) =>
+    (((hash ^ byte) * _fnvPrime) & 0xFFFFFFFF);
+
+Uint8List _pulseKeystream(int length) {
+  var state = _fnvBasis;
+  for (final byte in _pulseSalt) {
+    state = _fold(state, byte);
   }
-  final result = Uint8List(length);
-  var left = 0;
-  var right = 0;
-  for (var index = 0; index < length; index++) {
-    left = (left + 1) & 0xff;
-    right = (right + state[left] + index) & 0xff;
-    final swap = state[left];
-    state[left] = state[right];
-    state[right] = swap;
-    result[index] = state[(state[left] + state[right]) & 0xff];
+  state = _fold(state, length & 0xFF);
+  state = _fold(state, (length >> 8) & 0xFF);
+  final buffer = Uint8List(length);
+  for (var i = 0; i < length; i++) {
+    state = _fold(state, i & 0xFF);
+    state = (state ^ ((state << 13) & 0xFFFFFFFF)) & 0xFFFFFFFF;
+    state = (state ^ (state >> 17)) & 0xFFFFFFFF;
+    state = (state ^ ((state << 5) & 0xFFFFFFFF)) & 0xFFFFFFFF;
+    buffer[i] = (state ^ (state >> 8) ^ (state >> 16) ^ (state >> 24)) & 0xFF;
   }
-  return result;
+  return buffer;
 }
+
+int _positionByte(int index) =>
+    (((index * _positionMask) ^ ((index << 3) & 0xFF) ^ (index >> 2)) & 0xFF);
 
 List<int> encodeNebula(String value) {
   final bytes = Uint8List.fromList(value.codeUnits);
-  final stream = _driftStream(bytes.length);
+  final stream = _pulseKeystream(bytes.length);
   return List<int>.generate(
     bytes.length,
-    (index) => (bytes[index] + stream[index] + (index * 23)) & 0xff,
+    (i) => (bytes[i] ^ stream[i] ^ _positionByte(i)) & 0xFF,
   );
 }
 
-String decodeNebula(List<int> encoded) {
-  final stream = _driftStream(encoded.length);
+String decodeNebula(List<int> payload) {
+  if (payload.isEmpty) return '';
+  final stream = _pulseKeystream(payload.length);
   return String.fromCharCodes(
     List<int>.generate(
-      encoded.length,
-      (index) => (encoded[index] - stream[index] - (index * 23)) & 0xff,
+      payload.length,
+      (i) => (payload[i] ^ stream[i] ^ _positionByte(i)) & 0xFF,
     ),
   );
 }
@@ -63,7 +69,7 @@ void main() {
     'support': 'https://novatokendrop.com/support.html',
     'gcd': 'https://gcdsdk.appsflyer.com/install_data/v5.0/',
     'webkit': '605.1.15',
-    'safari': '18.5',
+    'safari': '18.4',
     'safariTail': '604.1',
     'appsFlyerKey': '3u3esfHnhrj7bYRXrz3xEj',
     'firebaseProject': '741000623106',

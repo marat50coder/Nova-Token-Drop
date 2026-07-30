@@ -11,8 +11,9 @@ import 'infra/orbit_vault.dart';
 import 'infra/pulse_hub.dart';
 import 'infra/signal_agent.dart';
 
-/// The whole routing brain of the Nova gate. [decide] runs the cold-start →
-/// attribution → config pipeline once and returns a [GateTarget].
+/// Routing brain of the Nova gate. [decide] walks the cold-start → attribution
+/// → config pipeline exactly once (concurrent calls receive the same future)
+/// and returns a [GateTarget] describing where the boot splash should go next.
 class GateCoordinator {
   GateCoordinator({
     required this.vault,
@@ -24,6 +25,11 @@ class GateCoordinator {
     required this.runtimeEnabled,
   });
 
+  static const Duration _firstInstallAttributionWindow =
+      Duration(seconds: 15);
+  static const Duration _returningAttributionWindow =
+      Duration(seconds: 5);
+
   final OrbitVault vault;
   final LinkProbe probe;
   final DriftAttribution attribution;
@@ -34,76 +40,88 @@ class GateCoordinator {
 
   bool get enabled => runtimeEnabled && NovaGateConfig.gateCredentialsReady;
 
-  Future<GateTarget>? _decideFuture;
+  Future<GateTarget>? _inFlight;
 
-  /// True once the first decision pipeline has finished. Guards
-  /// [_refreshForToken] so an FCM token arriving *mid-decision* does not fire a
-  /// premature config POST with empty attribution (that request always 404s and
-  /// races the real, attribution-complete request).
+  /// True once the first pipeline has settled. Guards [_refreshAfterToken] so
+  /// a late FCM token arriving mid-decision does NOT fire a premature config
+  /// POST with empty attribution (that always 404s and races the real one).
   bool _settled = false;
 
-  /// De-duplicates only *concurrent* calls (the boot screen can build twice at
-  /// startup). The cache clears once the pipeline finishes, so Retry from the
-  /// offline screen re-runs the whole pipeline instead of replaying a cached
-  /// OfflineTarget forever.
   Future<GateTarget> decide({
     required void Function(double value) onProgress,
   }) {
-    final existing = _decideFuture;
+    final existing = _inFlight;
     if (existing != null) return existing;
     _settled = false;
-    return _decideFuture = _decide(onProgress: onProgress).whenComplete(() {
-      _decideFuture = null;
+    final future = _runPipeline(onProgress).whenComplete(() {
+      _inFlight = null;
       _settled = true;
     });
+    return _inFlight = future;
   }
 
-  Future<GateTarget> _decide({
-    required void Function(double value) onProgress,
-  }) async {
+  Future<GateTarget> _runPipeline(void Function(double) progress) async {
     if (!enabled) {
-      onProgress(1);
+      progress(1);
       return const GameTarget();
     }
 
-    pulse.onTokenChanged = _refreshForToken;
+    pulse.onTokenChanged = _refreshAfterToken;
+
     final coldRoute = await ColdTapReader.consume();
     if (coldRoute != null) {
-      await vault.saveRoute(GateRoute.portal);
-      await vault.consumePushUrl();
-      unawaited(_backgroundDispatch());
-      onProgress(1);
-      return PortalTarget(coldRoute, coldLaunch: true);
+      return _handleColdStart(coldRoute, progress);
     }
 
-    onProgress(0.12);
-    return switch (vault.route) {
-      GateRoute.undecided => _firstDecision(onProgress),
-      GateRoute.portal => _returningPortal(onProgress),
-      GateRoute.game => _returningGame(onProgress),
-    };
+    progress(0.12);
+    switch (vault.route) {
+      case GateRoute.undecided:
+        return _decideFirstRun(progress);
+      case GateRoute.portal:
+        return _decideReturningPortal(progress);
+      case GateRoute.game:
+        return _decideReturningGame(progress);
+    }
   }
 
-  Future<GateTarget> _firstDecision(void Function(double) progress) async {
+  Future<GateTarget> _handleColdStart(
+    String coldRoute,
+    void Function(double) progress,
+  ) async {
+    await vault.saveRoute(GateRoute.portal);
+    await vault.consumePushUrl();
+    unawaited(_dispatchInBackground());
+    progress(1);
+    return PortalTarget(coldRoute, coldLaunch: true);
+  }
+
+  Future<GateTarget> _decideFirstRun(void Function(double) progress) async {
     if (!await probe.hasInterface()) {
       return const OfflineTarget(returnToGame: false);
     }
     progress(0.28);
+
+    // Fire push bootstrap early — errors here are non-fatal to routing.
     try {
       await pulse.boot();
     } catch (_) {}
+
     if (!await probe.canReachNetwork()) {
       return const OfflineTarget(returnToGame: false);
     }
     progress(0.48);
-    // Fresh installs need a wider window: the ATT prompt + AppsFlyer SDK spin-up
-    // + conversion callback can take ~10s on a cold first launch. A short
-    // timeout here makes the gate give up and fall back to the game before the
-    // paid attribution (and its config URL) ever arrives.
-    await attribution.awaitSignals(installTimeout: const Duration(seconds: 15));
+
+    // Fresh installs need a wider window: ATT prompt + AppsFlyer SDK spin-up
+    // + conversion callback can take ~10s. A short timeout here would make
+    // the gate fall back to the game before the paid attribution arrives.
+    await attribution.awaitSignals(
+      installTimeout: _firstInstallAttributionWindow,
+    );
     progress(0.72);
+
     final reply = await _requestConfig();
     progress(1);
+
     if (reply.hasDestination) {
       await vault.saveRoute(GateRoute.portal);
       return PortalTarget(reply.url!);
@@ -112,21 +130,27 @@ class GateCoordinator {
     return const GameTarget();
   }
 
-  Future<GateTarget> _returningPortal(void Function(double) progress) async {
+  Future<GateTarget> _decideReturningPortal(
+    void Function(double) progress,
+  ) async {
     if (!await probe.hasInterface()) {
       return const OfflineTarget(returnToGame: false);
     }
+
+    // Any push URL waiting from a previous session wins immediately.
     final pending = await vault.consumePushUrl();
     if (pending != null && pending.isNotEmpty) {
       progress(1);
       return PortalTarget(pending);
     }
+
     final cached = await vault.savedUrl();
     if (cached != null && !vault.cachedUrlExpired) {
       progress(1);
       return PortalTarget(cached);
     }
 
+    // No fresh URL cached → refresh attribution + config.
     await Future.wait<void>(<Future<void>>[
       pulse.boot(),
       attribution.start(),
@@ -135,7 +159,10 @@ class GateCoordinator {
       return const OfflineTarget(returnToGame: false);
     }
     progress(0.62);
-    await attribution.awaitSignals(installTimeout: const Duration(seconds: 5));
+    await attribution.awaitSignals(
+      installTimeout: _returningAttributionWindow,
+    );
+
     final reply = await _requestConfig();
     progress(1);
     if (reply.hasDestination) return PortalTarget(reply.url!);
@@ -143,11 +170,14 @@ class GateCoordinator {
     return const OfflineTarget(returnToGame: false);
   }
 
-  Future<GateTarget> _returningGame(void Function(double) progress) async {
+  Future<GateTarget> _decideReturningGame(
+    void Function(double) progress,
+  ) async {
     if (!await probe.hasInterface()) {
       progress(1);
       return const GameTarget();
     }
+
     await Future.wait<void>(<Future<void>>[
       pulse.boot(),
       attribution.start(),
@@ -158,22 +188,24 @@ class GateCoordinator {
     }
     progress(0.55);
     await attribution.awaitSignals();
+
     final reply = await _requestConfig();
     progress(1);
     if (!reply.hasDestination) return const GameTarget();
+
     await vault.saveRoute(GateRoute.portal);
     return PortalTarget(reply.url!);
   }
 
   Future<GateReply> _requestConfig({String? token}) async {
-    final body = await attribution.compose(
+    final payload = await attribution.compose(
       locale: Platform.localeName.replaceAll('-', '_'),
       pushToken: token ?? pulse.token,
     );
-    return exchange.request(body);
+    return exchange.request(payload);
   }
 
-  Future<void> _backgroundDispatch() async {
+  Future<void> _dispatchInBackground() async {
     try {
       await Future.wait<void>(<Future<void>>[
         pulse.boot(),
@@ -183,11 +215,11 @@ class GateCoordinator {
     } catch (_) {}
   }
 
-  Future<void> _refreshForToken(String token) async {
+  Future<void> _refreshAfterToken(String token) async {
     // Only refresh the backend with a late FCM token AFTER the first decision
     // has settled. During the initial pipeline `compose()` already picks up
-    // `pulse.token`, so firing here mid-decision only produces a redundant POST
-    // with empty attribution.
+    // `pulse.token`, so firing here mid-decision only produces a redundant
+    // POST with empty attribution.
     if (!_settled) return;
     try {
       await _requestConfig(token: token);

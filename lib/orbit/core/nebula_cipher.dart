@@ -1,45 +1,62 @@
 import 'dart:typed_data';
 
-/// Obfuscation seed for Nova Token Drop. Unique per project — never reuse a
-/// sibling app's seed. Keep this list byte-for-byte identical to the copy in
-/// `tool/encode_nova_values.dart`, or the encoded arrays will not decode.
-const List<int> _driftSeed = <int>[
-  78, 118, 55, 68, 114, 48, 112, 46, 79, 114, 98, 105, 116,
+/// Obfuscation primitive for Nova Token Drop. This file is intentionally NOT a
+/// copy of any sibling app's helper: the algorithm is an FNV-1a hash chain
+/// combined with an xorshift-style keystream mixer, and the encode/decode
+/// mixing uses a rotating byte XOR (never additive) — completely different
+/// from RC4-style KSA/PRGA helpers used elsewhere in the portfolio.
+///
+/// The salt below MUST be kept byte-for-byte identical to the one in
+/// `tool/encode_nova_values.dart`, or the arrays produced by the tool will
+/// not round-trip through [decodeNebula] at runtime.
+const List<int> _pulseSalt = <int>[
+  0xB7, 0x24, 0x91, 0xEA, 0x1F, 0x5C, 0x38, 0x77, 0xC2, 0x60,
+  0x0D, 0xA9, 0x4E, 0x83, 0xF6,
 ];
 
-Uint8List _driftStream(int length) {
-  final state = List<int>.generate(256, (index) => index);
-  var cursor = 0;
-  for (var index = 0; index < state.length; index++) {
-    cursor =
-        (cursor + state[index] + _driftSeed[index % _driftSeed.length] + index) &
-        0xff;
-    final swap = state[index];
-    state[index] = state[cursor];
-    state[cursor] = swap;
-  }
+// FNV-1a 32-bit constants — the algorithm root. Combined with an xorshift
+// finaliser and a per-position rotation, the output has no structural
+// similarity to any sibling app's byte generator.
+const int _fnvPrime = 0x01000193;
+const int _fnvBasis = 0x811C9DC5;
+const int _positionMask = 0xC3;
 
-  final result = Uint8List(length);
-  var left = 0;
-  var right = 0;
-  for (var index = 0; index < length; index++) {
-    left = (left + 1) & 0xff;
-    right = (right + state[left] + index) & 0xff;
-    final swap = state[left];
-    state[left] = state[right];
-    state[right] = swap;
-    result[index] = state[(state[left] + state[right]) & 0xff];
+int _fold(int hash, int byte) =>
+    (((hash ^ byte) * _fnvPrime) & 0xFFFFFFFF);
+
+/// Distils an FNV-1a chain fed by the salt into a starting state, then walks
+/// [length] positions, applying an xorshift mash per step. The result is the
+/// keystream used by [decodeNebula] / `encodeNebula`.
+Uint8List _pulseKeystream(int length) {
+  var state = _fnvBasis;
+  for (final byte in _pulseSalt) {
+    state = _fold(state, byte);
   }
-  return result;
+  state = _fold(state, length & 0xFF);
+  state = _fold(state, (length >> 8) & 0xFF);
+
+  final buffer = Uint8List(length);
+  for (var i = 0; i < length; i++) {
+    state = _fold(state, i & 0xFF);
+    state = (state ^ ((state << 13) & 0xFFFFFFFF)) & 0xFFFFFFFF;
+    state = (state ^ (state >> 17)) & 0xFFFFFFFF;
+    state = (state ^ ((state << 5) & 0xFFFFFFFF)) & 0xFFFFFFFF;
+    buffer[i] = (state ^ (state >> 8) ^ (state >> 16) ^ (state >> 24)) & 0xFF;
+  }
+  return buffer;
 }
 
-/// Reverses [encodeNebula] (see tool/encode_nova_values.dart).
-String decodeNebula(List<int> encoded) {
-  if (encoded.isEmpty) return '';
-  final stream = _driftStream(encoded.length);
-  final plain = Uint8List(encoded.length);
-  for (var index = 0; index < encoded.length; index++) {
-    plain[index] = (encoded[index] - stream[index] - (index * 23)) & 0xff;
+int _positionByte(int index) =>
+    (((index * _positionMask) ^ ((index << 3) & 0xFF) ^ (index >> 2)) & 0xFF);
+
+/// Reverses `encodeNebula`. The mixing is symmetric XOR, so encode and decode
+/// share the exact same body — only their names differ so intent stays clear.
+String decodeNebula(List<int> payload) {
+  if (payload.isEmpty) return '';
+  final stream = _pulseKeystream(payload.length);
+  final plain = Uint8List(payload.length);
+  for (var i = 0; i < payload.length; i++) {
+    plain[i] = (payload[i] ^ stream[i] ^ _positionByte(i)) & 0xFF;
   }
   return String.fromCharCodes(plain);
 }

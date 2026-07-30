@@ -1,9 +1,14 @@
 import '../core/nebula_cipher.dart';
 
-/// Central config for the Nova Token Drop gray gate. All secrets are stored as
-/// obfuscated byte arrays produced by `tool/encode_nova_values.dart` (never
-/// plaintext). To rotate a value: edit the tool, run
-/// `dart run tool/encode_nova_values.dart`, paste the arrays back here.
+/// Central config for the Nova Token Drop gray gate. Every credential lives as
+/// an obfuscated byte array produced by `tool/encode_nova_values.dart` — this
+/// file never contains plaintext URLs, keys or project ids.
+///
+/// Rotation workflow:
+///   1. Edit `tool/encode_nova_values.dart` (plaintext map at the bottom).
+///   2. Run `dart run tool/encode_nova_values.dart`.
+///   3. Paste the printed byte arrays here in the matching slots.
+///   4. The tool's VERIFY footer must confirm a round-trip.
 ///
 /// The gate stays disabled (game only) until [endpoint], [appsFlyerKey] and
 /// [firebaseProjectNumber] all decode to non-empty strings.
@@ -18,38 +23,44 @@ abstract final class NovaGateConfig {
   static const int organicRecheckSeconds = 6;
 
   // ── Encoded secrets (from tool/encode_nova_values.dart) ──────────────────
+  // https://novatokendrop.com/config.php
   static const List<int> _endpoint = <int>[
-    85, 225, 234, 233, 222, 222, 3, 221, 133, 19, 4, 221, 44, 253, 77, 100,
-    166, 1, 189, 178, 123, 233, 163, 169, 215, 109, 109, 122, 114, 41, 249,
-    240, 61, 177, 71, 202,
+    115, 153, 14, 55, 1, 243, 204, 90, 119, 68, 65, 214, 181, 211, 106, 222,
+    199, 173, 105, 117, 73, 170, 81, 169, 30, 184, 21, 66, 240, 89, 203, 139,
+    157, 8, 174, 207,
   ];
+  // https://novatokendrop.com/privacy-policy.html
   static const List<int> _privacy = <int>[
-    85, 225, 234, 233, 222, 222, 3, 221, 133, 19, 4, 221, 44, 253, 77, 100,
-    166, 1, 189, 178, 123, 233, 163, 169, 215, 109, 122, 125, 109, 57, 241,
-    236, 136, 110, 79, 201, 91, 169, 17, 59, 17, 192, 38, 21, 42,
+    131, 61, 138, 181, 61, 236, 71, 28, 52, 78, 148, 158, 203, 198, 142, 58,
+    106, 27, 49, 149, 50, 219, 130, 108, 84, 20, 218, 65, 99, 170, 226, 191,
+    188, 220, 161, 12, 192, 171, 148, 24, 64, 91, 165, 89, 101,
   ];
+  // https://novatokendrop.com/support.html
   static const List<int> _support = <int>[
-    85, 225, 234, 233, 222, 222, 3, 221, 133, 19, 4, 221, 44, 253, 77, 100,
-    166, 1, 189, 178, 123, 233, 163, 169, 215, 109, 125, 128, 116, 51, 255,
-    251, 131, 111, 71, 206, 92, 172,
+    253, 135, 184, 208, 157, 190, 56, 31, 246, 224, 111, 55, 189, 59, 187, 86,
+    132, 170, 244, 162, 154, 125, 251, 224, 222, 76, 74, 165, 107, 24, 73, 70,
+    124, 153, 162, 45, 12, 138,
   ];
+  // https://gcdsdk.appsflyer.com/install_data/v5.0/
   static const List<int> _gcd = <int>[
-    85, 225, 234, 233, 222, 222, 3, 221, 126, 7, 242, 239, 28, 249, 16, 96,
-    168, 13, 190, 169, 119, 52, 165, 172, 152, 161, 121, 120, 51, 44, 254,
-    252, 131, 162, 75, 198, 78, 164, 15, 54, 68, 135, 40, 221, 236, 183, 206,
+    31, 228, 85, 162, 195, 225, 242, 93, 82, 178, 113, 14, 221, 200, 250, 71,
+    199, 131, 115, 194, 220, 73, 106, 143, 244, 224, 198, 147, 85, 55, 146,
+    108, 235, 233, 82, 123, 139, 213, 117, 12, 141, 59, 207, 203, 210, 144, 68,
   ];
   static const List<int> _appsFlyerKey = <int>[
-    32, 226, 169, 222, 222, 10, 28, 28, 127, 22, 248, 179, 26, 231, 52, 87,
-    170, 23, 126, 187, 80, 37,
+    254, 206, 12, 175, 126, 243, 173, 244, 235, 118, 114, 69, 210, 164, 91, 4,
+    202, 74, 225, 103, 48, 213,
   ];
   static const List<int> _firebaseProject = <int>[
-    36, 161, 167, 169, 155, 212, 10, 224, 74, 213, 190, 178,
+    163, 29, 198, 114, 173, 131, 247, 110, 62, 244, 104, 68,
   ];
 
-  // User-Agent version fragments — varied per project (see gray_user_agent).
-  static const List<int> _webkit = <int>[35, 157, 171, 167, 156, 210, 5, 227];
-  static const List<int> _safari = <int>[30, 165, 164, 174];
-  static const List<int> _safariTail = <int>[35, 157, 170, 167, 156];
+  // User-Agent version fragments — varied per project.
+  static const List<int> _webkit = <int>[
+    102, 106, 85, 167, 56, 41, 86, 187,
+  ];
+  static const List<int> _safari = <int>[244, 92, 122, 0];
+  static const List<int> _safariTail = <int>[59, 69, 93, 34, 211];
 
   static String get endpoint => decodeNebula(_endpoint);
   static String get privacyUrl => decodeNebula(_privacy);
