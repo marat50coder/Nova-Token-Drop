@@ -48,8 +48,13 @@ class _BootGateState extends State<BootGate> with TickerProviderStateMixin {
       DeviceOrientation.landscapeRight,
     ]);
     _smoother = Timer.periodic(const Duration(milliseconds: 32), (_) {
-      final target = _progress * 0.92;
-      if (mounted) setState(() => _display += (target - _display) * 0.12);
+      final target = (_progress * 0.92).clamp(0.0, 1.0);
+      if (mounted) {
+        setState(() {
+          final next = _display + (target - _display) * 0.12;
+          _display = next.clamp(0.0, 1.0);
+        });
+      }
     });
     // Pure safety net. Must stay comfortably ABOVE the coordinator's happy-path
     // decision time (attribution wait ~10-15s on a cold first install) so the UI
@@ -106,13 +111,13 @@ class _BootGateState extends State<BootGate> with TickerProviderStateMixin {
       if (!mounted) return;
       setState(() {
         final next = _display + (1.0 - _display) * 0.35 + 0.01;
-        _display = next > 1.0 ? 1.0 : next;
+        _display = next.clamp(0.0, 1.0);
       });
+      if (_display >= 1.0) break; // stop the moment we hit 100%
       await Future<void>.delayed(const Duration(milliseconds: 20));
     }
     if (!mounted) return;
     setState(() => _display = 1.0);
-    await Future<void>.delayed(const Duration(milliseconds: 160));
     if (!mounted) return;
     await _open(_target!);
   }

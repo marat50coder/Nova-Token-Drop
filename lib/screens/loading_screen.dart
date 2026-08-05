@@ -28,15 +28,20 @@ class _LoadingScreenState extends State<LoadingScreen> with TickerProviderStateM
     _startLoading();
     // smoothly ease the displayed bar toward the target
     _smoother = Timer.periodic(const Duration(milliseconds: 32), (_) {
-      final target = _progress * 0.92; // hold below 100% until the final moment
-      if (mounted) setState(() => _display += (target - _display) * 0.12);
+      final target = (_progress * 0.92).clamp(0.0, 1.0); // hold below 100% until the final moment
+      if (mounted) {
+        setState(() {
+          final next = _display + (target - _display) * 0.12;
+          _display = next.clamp(0.0, 1.0);
+        });
+      }
     });
   }
 
   Future<void> _startLoading() async {
     final started = DateTime.now();
     await SpriteCache.instance.preloadAll((p) {
-      if (mounted) _progress = p;
+      if (mounted) _progress = p.clamp(0.0, 1.0);
     });
     // guarantee a minimum on-screen time so the animation reads well
     final elapsed = DateTime.now().difference(started);
@@ -50,13 +55,13 @@ class _LoadingScreenState extends State<LoadingScreen> with TickerProviderStateM
       if (!mounted) return;
       setState(() {
         final next = _display + (1.0 - _display) * 0.35 + 0.01;
-        _display = next > 1.0 ? 1.0 : next;
+        _display = next.clamp(0.0, 1.0);
       });
+      if (_display >= 1.0) break; // stop the moment we hit 100%
       await Future.delayed(const Duration(milliseconds: 22));
     }
     if (!mounted) return;
     setState(() => _display = 1.0);
-    await Future.delayed(const Duration(milliseconds: 260));
     _launch();
   }
 
